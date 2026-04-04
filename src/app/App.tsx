@@ -15,7 +15,6 @@ import { TabBar } from './components/TabBar';
 import { MotorDetailCard } from './components/MotorDetailCard';
 import { EventCard } from './components/EventCard';
 import { LocomotiveDropdown } from './components/LocomotiveDropdown';
-import logoImage from 'figma:asset/60b970c149dc78cc8626355c9fc3c117cae2eca9.png';
 
 interface Locomotive {
   id: string;
@@ -164,7 +163,6 @@ function Dashboard() {
         borderBottomWidth: '0.5px'
       }}>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          <img src={logoImage} alt="Logo" className="h-8 sm:h-10 w-auto" />
           <div className="w-2 h-2 rounded-full" style={{
             backgroundColor: selectedLocomotive.status === 'ok' ? 'var(--dash-status-ok)' : selectedLocomotive.status === 'warn' ? 'var(--dash-status-warn)' : '#ef4444',
             boxShadow: `0 0 6px ${selectedLocomotive.status === 'ok' ? 'var(--dash-status-ok)' : selectedLocomotive.status === 'warn' ? 'var(--dash-status-warn)' : '#ef4444'}`
