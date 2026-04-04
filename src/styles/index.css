@@ -1,0 +1,26 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* Theme transition */
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+/* Disable transitions for elements that shouldn't animate */
+svg, path, circle, line {
+  transition: none;
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
