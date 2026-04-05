@@ -65,6 +65,39 @@ interface LocoViewModel {
   route?: RouteInfo;
 }
 
+interface TractionMotor {
+  id: number;
+  current: number;
+  temperature: number;
+}
+
+function parseTractionMotors(parameters: Record<string, unknown> | undefined): TractionMotor[] {
+  const raw = parameters?.traction_motors;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item): TractionMotor | null => {
+      if (!item || typeof item !== 'object') return null;
+      const motor = item as Record<string, unknown>;
+
+      const id = Number(motor.id);
+      const current = Number(motor.current);
+      const temperature = Number(motor.temperature);
+
+      if (!Number.isFinite(id) || !Number.isFinite(current) || !Number.isFinite(temperature)) {
+        return null;
+      }
+
+      return {
+        id,
+        current,
+        temperature,
+      };
+    })
+    .filter((m): m is TractionMotor => m !== null)
+    .sort((a, b) => a.id - b.id);
+}
+
 // ---------------------------------------------------------------------------
 // Loading / Error UI
 // ---------------------------------------------------------------------------
@@ -365,6 +398,7 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
   const liveHealth = activeFrame?.health_index ?? selectedLoco?.healthIndex ?? 80;
   const liveState = activeFrame?.state ?? null;
   const liveStatus = toStatus(liveState);
+  const tractionMotors = parseTractionMotors(activeFrame?.parameters);
 
   // -------------------------------------------------------------------------
   // Export CSV
@@ -755,15 +789,28 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
       {/* Tab Content: Motors */}
       {activeTab === 'motors' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          {Array.from({ length: 8 }, (_, i) => (
-            <MotorDetailCard
-              key={i}
-              label={`ТЭД ${i + 1}`}
-              temp={85 + Math.round(Math.random() * 20)}
-              current={470 + Math.round(Math.random() * 60)}
-              status={liveStatus === 'critical' && i === 2 ? 'warn' : 'ok'}
-            />
-          ))}
+          {Array.from({ length: 8 }, (_, i) => {
+            const motor = tractionMotors[i];
+            const temp = motor ? Math.round(motor.temperature) : 0;
+            const current = motor ? Math.round(motor.current) : 0;
+            const status: 'ok' | 'warn' | 'crit' = !motor
+              ? 'warn'
+              : temp >= 110 || current >= 620
+                ? 'crit'
+                : temp >= 95 || current >= 540
+                  ? 'warn'
+                  : 'ok';
+
+            return (
+              <MotorDetailCard
+                key={i}
+                label={`ТЭД ${i + 1}`}
+                temp={temp}
+                current={current}
+                status={status}
+              />
+            );
+          })}
         </div>
       )}
 
