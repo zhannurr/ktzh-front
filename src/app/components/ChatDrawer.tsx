@@ -57,12 +57,12 @@ export function ChatDrawer({ isOpen, onClose }: ChatDrawerProps) {
     <>
       {/* Overlay */}
       <div
-        className="fixed inset-0 bg-black/20 z-40"
+        className="fixed inset-0 bg-black/20 z-[2000]"
         onClick={onClose}
       />
 
       {/* Drawer */}
-      <div className="fixed right-0 top-0 h-full w-[340px] border-l z-50 flex flex-col animate-slide-in" style={{
+      <div className="fixed right-0 top-0 h-full w-[340px] border-l z-[2001] flex flex-col animate-slide-in" style={{
         backgroundColor: 'var(--dash-bg-page)',
         borderColor: 'var(--dash-border)',
         borderLeftWidth: '0.5px'

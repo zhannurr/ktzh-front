@@ -157,7 +157,7 @@ export function CreateRouteModal({ isOpen, onClose, onCreated }: CreateRouteModa
         style={{
           position: 'fixed',
           inset: 0,
-          zIndex: 1000,
+          zIndex: 2000,
           backgroundColor: 'rgba(0,0,0,0.6)',
           backdropFilter: 'blur(4px)',
           display: 'flex',

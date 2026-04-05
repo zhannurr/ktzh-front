@@ -17,7 +17,7 @@ type PlayState = 'live' | 'paused' | 'playing';
 
 const RESOLUTIONS: { label: string; value: TelemetryResolution; windowMs: number }[] = [
   // { label: '5 мин',  value: 'raw', windowMs: 5  * 60 * 1000 },
-  { label: '5 мин',    value: '5m',  windowMs: 2  * 60 * 60 * 1000 },
+  { label: 'Запуск',    value: '5m',  windowMs: 2  * 60 * 60 * 1000 },
 ];
 
 function fmt(iso: string) {

@@ -242,6 +242,19 @@ function ConnectionBadge({ status, latency }: { status: ConnStatus; latency?: nu
 // Main Dashboard (needs data already loaded)
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// Static route points (placeholder coordinates)
+// ---------------------------------------------------------------------------
+const points: [number, number][] = [
+  [43.238949, 76.889709], // Алматы
+  [43.5936, 73.7424],     // Шу
+  [44.5936, 74.9],        // Сары-Шаган
+  [46.8, 74.98],          // Балхаш
+  [49.8, 73.1],           // Караганда
+  [51.169392, 71.449074], // Астана
+];
+
 interface DashboardProps {
   locos: LocoViewModel[];
   routes: RouteInfo[];
@@ -266,7 +279,10 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
   const [selectedRoute, setSelectedRoute] = useState<RouteInfo | null>(initialRoutes[0] ?? null);
 
   // Keep selectedLoco in sync with selected route's locomotive_type
-  const selectedLoco = locos.find((l) => l.id === selectedRoute?.locomotive_type) ?? locos[0];
+  const selectedLoco = locos.find((l) => 
+    l.id.toLowerCase() === selectedRoute?.locomotive_type.toLowerCase() ||
+    l.type.toLowerCase() === selectedRoute?.locomotive_type.toLowerCase()
+  ) ?? locos[0];
 
   const [telemetry, setTelemetry] = useState<TelemetryHistoryItem | null>(null);
   const [connStatus, setConnStatus] = useState<ConnStatus>('connecting');
@@ -427,6 +443,8 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
       link.click();
     }
   };
+
+
 
   // Derived display
   const stationList = selectedRoute
@@ -762,8 +780,9 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
                 {selectedRoute ? (
                   <RouteMap
                     stationList={stationList}
-                    currentKm={Math.round(liveSpeed * 2)}
-                    totalKm={500}
+                    currentKm={Math.round(liveSpeed * 4.5)}
+                    totalKm={1212}
+                    points={points}
                   />
                 ) : (
                   <div
@@ -792,8 +811,8 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {Array.from({ length: 8 }, (_, i) => {
             const motor = tractionMotors[i];
-            const temp = motor ? Math.round(motor.temperature) : 0;
-            const current = motor ? Math.round(motor.current) : 0;
+            const temp = motor ? Math.round(motor.temperature) : 30;
+            const current = motor ? Math.round(motor.current) : 30;
             const status: 'ok' | 'warn' | 'crit' = !motor
               ? 'warn'
               : temp >= 110 || current >= 620
