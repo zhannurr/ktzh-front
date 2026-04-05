@@ -10,7 +10,7 @@ import { CircularGauge } from './components/CircularGauge';
 import { ArcGauge } from './components/ArcGauge';
 import { PredictiveAlertStrip } from './components/PredictiveAlertStrip';
 import { ChatDrawer } from './components/ChatDrawer';
-import { TabBar } from './components/TabBar';
+import { TabBar, isDieselLocomotiveType } from './components/TabBar';
 import { MotorDetailCard } from './components/MotorDetailCard';
 import { EventCard } from './components/EventCard';
 import { RouteDropdown } from './components/RouteDropdown';
@@ -522,6 +522,7 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
           activeTab={activeTab}
           onTabChange={setActiveTab}
           hasMotorAlert={liveStatus === 'critical'}
+          locomotiveType={selectedLoco.type}
         />
       </div>
 
@@ -814,46 +815,85 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
         </div>
       )}
 
-      {/* Tab Content: Electrics */}
+      {/* Tab Content: Электрика (электровозы) / Дизель и топливо (ТЭ33А и др.) */}
       {activeTab === 'electrics' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          <div
-            className="border rounded-[10px] p-5"
-            style={{
-              backgroundColor: 'var(--dash-bg-card)',
-              borderColor: 'var(--dash-border)',
-              boxShadow: 'var(--dash-shadow)',
-            }}
-          >
-            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
-              Контактная сеть
+        isDieselLocomotiveType(selectedLoco.type) ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
+            <div
+              className="border rounded-[10px] p-5"
+              style={{
+                backgroundColor: 'var(--dash-bg-card)',
+                borderColor: 'var(--dash-border)',
+                boxShadow: 'var(--dash-shadow)',
+              }}
+            >
+              <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>Дизель GEVO V12</div>
+              <div className="flex flex-col gap-2">
+                <ParamRow name="Обороты дизеля" value="1050" unit="об/мин" status="ok" />
+                <ParamRow name="Мощность дизеля" value="3100" unit="кВт" status="ok" />
+                <ParamRow name="Темп. охл. воды" value="82" unit="°C" status="ok" />
+                <ParamRow name="Темп. масла" value="76" unit="°C" status="ok" />
+                <ParamRow name="Давление масла" value="4.2" unit="бар" status="ok" />
+              </div>
             </div>
-            <div className="flex flex-col gap-2">
-              <ParamRow name="Напряжение КС" value="25.1" unit="кВ" status="ok" />
-              <ParamRow name="Ток ТЭД (средний)" value={telemetry ? String(Math.round(liveSpeed * 6.5)) : '—'} unit="А" status="ok" />
-              <ParamRow name="Мощность потребления" value={telemetry ? String(Math.round(liveSpeed * 57)) : '—'} unit="кВт" status="ok" />
-              <ParamRow name="Рекуперация" value="Активна" unit="" status="ok" />
-            </div>
-          </div>
 
-          <div
-            className="border rounded-[10px] p-5"
-            style={{
-              backgroundColor: 'var(--dash-bg-card)',
-              borderColor: 'var(--dash-border)',
-              boxShadow: 'var(--dash-shadow)',
-            }}
-          >
-            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
-              Тепловые узлы
-            </div>
-            <div className="flex flex-col gap-2">
-              <ParamRow name="Состояние" value={liveState ?? '—'} unit="" status={liveStatus === 'critical' ? 'warn' : 'ok'} />
-              <ParamRow name="Индекс здоровья" value={telemetry ? String(Math.round(liveHealth)) : '—'} unit="%" status={liveHealth < 70 ? 'warn' : 'ok'} />
-              <ParamRow name="Скорость" value={telemetry ? String(Math.round(liveSpeed)) : '—'} unit="км/ч" status="ok" />
+            <div
+              className="border rounded-[10px] p-5"
+              style={{
+                backgroundColor: 'var(--dash-bg-card)',
+                borderColor: 'var(--dash-border)',
+                boxShadow: 'var(--dash-shadow)',
+              }}
+            >
+              <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>Расходники</div>
+              <div className="flex flex-col gap-2">
+                <ParamRow name="Уровень топлива" value="78" unit="%" status="warn" />
+                <ParamRow name="Уровень масла" value="85" unit="%" status="ok" />
+                <ParamRow name="Уровень воды" value="91" unit="%" status="ok" />
+                <ParamRow name="Запас песка" value="60" unit="%" status="warn" />
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
+            <div
+              className="border rounded-[10px] p-5"
+              style={{
+                backgroundColor: 'var(--dash-bg-card)',
+                borderColor: 'var(--dash-border)',
+                boxShadow: 'var(--dash-shadow)',
+              }}
+            >
+              <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
+                Контактная сеть
+              </div>
+              <div className="flex flex-col gap-2">
+                <ParamRow name="Напряжение КС" value="25.1" unit="кВ" status="ok" />
+                <ParamRow name="Ток ТЭД (средний)" value={telemetry ? String(Math.round(liveSpeed * 6.5)) : '—'} unit="А" status="ok" />
+                <ParamRow name="Мощность потребления" value={telemetry ? String(Math.round(liveSpeed * 57)) : '—'} unit="кВт" status="ok" />
+                <ParamRow name="Рекуперация" value="Активна" unit="" status="ok" />
+              </div>
+            </div>
+
+            <div
+              className="border rounded-[10px] p-5"
+              style={{
+                backgroundColor: 'var(--dash-bg-card)',
+                borderColor: 'var(--dash-border)',
+                boxShadow: 'var(--dash-shadow)',
+              }}
+            >
+              <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
+                Тепловые узлы
+              </div>
+              <div className="flex flex-col gap-2">
+                <ParamRow name="Состояние" value={liveState ?? '—'} unit="" status={liveStatus === 'critical' ? 'warn' : 'ok'} />
+                <ParamRow name="Индекс здоровья" value={telemetry ? String(Math.round(liveHealth)) : '—'} unit="%" status={liveHealth < 70 ? 'warn' : 'ok'} />
+                <ParamRow name="Скорость" value={telemetry ? String(Math.round(liveSpeed)) : '—'} unit="км/ч" status="ok" />
+              </div>
+            </div>
+          </div>
+        )
       )}
 
       {/* Tab Content: Brakes */}

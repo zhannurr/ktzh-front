@@ -1,14 +1,23 @@
+/** ТЭ33А / diesel в типе с бэкенда — вкладка «Дизель и топливо» вместо «Электрика». */
+export function isDieselLocomotiveType(type: string): boolean {
+  const t = type.toLowerCase();
+  return t.includes('diesel') || t.includes('тэ33') || t.includes('te33');
+}
+
 interface TabBarProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   hasMotorAlert: boolean;
+  locomotiveType: string;
 }
 
-export function TabBar({ activeTab, onTabChange, hasMotorAlert }: TabBarProps) {
+export function TabBar({ activeTab, onTabChange, hasMotorAlert, locomotiveType }: TabBarProps) {
+  const electricsLabel = isDieselLocomotiveType(locomotiveType) ? 'Дизель и топливо' : 'Электрика';
+
   const tabs = [
     { id: 'overview', label: 'Обзор' },
     { id: 'motors', label: 'Двигатели', showBadge: hasMotorAlert },
-    { id: 'electrics', label: 'Электрика' },
+    { id: 'electrics', label: electricsLabel },
     { id: 'brakes', label: 'Тормоза и прочее' },
     { id: 'history', label: 'История' },
     { id: 'ai', label: 'AI ассистент' }

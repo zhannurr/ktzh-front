@@ -20,6 +20,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
+    "resolveJsonModule": true,
+
     /* Paths */
     "baseUrl": ".",
     "paths": {
