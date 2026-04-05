@@ -1,8 +1,7 @@
-// Dashboard App
-import { useState } from 'react';
+// Dashboard App — wired to FastAPI backend
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import { MetricCell } from './components/MetricCell';
-import { MotorCell } from './components/MotorCell';
 import { FactorRow } from './components/FactorRow';
 import { ParamRow } from './components/ParamRow';
 import { AIPanel } from './components/AIPanel';
@@ -14,183 +13,442 @@ import { ChatDrawer } from './components/ChatDrawer';
 import { TabBar } from './components/TabBar';
 import { MotorDetailCard } from './components/MotorDetailCard';
 import { EventCard } from './components/EventCard';
-import { LocomotiveDropdown } from './components/LocomotiveDropdown';
+import { RouteDropdown } from './components/RouteDropdown';
+import { CreateRouteModal } from './components/CreateRouteModal';
 
-interface Locomotive {
+import {
+  getLocomotives,
+  getRoutes,
+  getLatestTelemetry,
+  getTelemetryHistory,
+  getRouteTelemetryExportUrl,
+  generateTelemetryForRoute,
+  connectRouteWebSocket,
+} from '@/api';
+import type {
+  LocomotiveInfo,
+  RouteInfo,
+  TelemetryHistoryItem,
+  TelemetryFrame,
+} from '@/api';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Maps backend locomotive id → human-friendly display name */
+function displayName(info: LocomotiveInfo): string {
+  return info.name;
+}
+
+/** Maps backend state string → UI status */
+function toStatus(state: string | null): 'ok' | 'warn' | 'critical' {
+  if (!state) return 'ok';
+  if (state === 'fault') return 'critical';
+  if (state === 'maintenance') return 'warn';
+  return 'ok';
+}
+
+// ---------------------------------------------------------------------------
+// Types used internally by UI
+// ---------------------------------------------------------------------------
+
+interface LocoViewModel {
   id: string;
   name: string;
-  route: string;
-  type: 'KZ8A' | 'ТЭ33А';
+  type: string;
   status: 'ok' | 'warn' | 'critical';
   healthIndex: number;
   speed: number;
   hasAlert: boolean;
+  route?: RouteInfo;
 }
 
-function Dashboard() {
+// ---------------------------------------------------------------------------
+// Loading / Error UI
+// ---------------------------------------------------------------------------
+
+function Spinner() {
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+        backgroundColor: 'var(--dash-bg-page)',
+        color: 'var(--dash-text-secondary)',
+        fontFamily: 'Manrope, sans-serif',
+      }}
+    >
+      <div
+        style={{
+          width: 40,
+          height: 40,
+          border: '3px solid rgba(240,192,64,0.3)',
+          borderTopColor: 'var(--dash-gold)',
+          borderRadius: '50%',
+          animation: 'spin 0.8s linear infinite',
+        }}
+      />
+      <span style={{ fontSize: 14 }}>Подключение к бэкенду…</span>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+        backgroundColor: 'var(--dash-bg-page)',
+        color: 'var(--dash-text-secondary)',
+        fontFamily: 'Manrope, sans-serif',
+        padding: 24,
+        textAlign: 'center',
+      }}
+    >
+      <svg
+        style={{ color: '#ef4444' }}
+        width={40}
+        height={40}
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+        />
+      </svg>
+      <div style={{ color: '#ef4444', fontSize: 14, maxWidth: 360 }}>{message}</div>
+      <button
+        onClick={onRetry}
+        style={{
+          padding: '8px 20px',
+          borderRadius: 8,
+          border: '1px solid var(--dash-border)',
+          backgroundColor: 'var(--dash-bg-card)',
+          color: 'var(--dash-text-primary)',
+          cursor: 'pointer',
+          fontSize: 13,
+        }}
+      >
+        Повторить
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Connection status badge
+// ---------------------------------------------------------------------------
+
+type ConnStatus = 'connecting' | 'live' | 'polling' | 'error';
+
+function ConnectionBadge({ status, latency }: { status: ConnStatus; latency?: number }) {
+  const label =
+    status === 'live'
+      ? 'LIVE'
+      : status === 'polling'
+        ? 'POLLING'
+        : status === 'connecting'
+          ? '…'
+          : 'OFFLINE';
+
+  const color =
+    status === 'live'
+      ? 'var(--dash-status-ok)'
+      : status === 'polling'
+        ? 'var(--dash-status-warn)'
+        : status === 'connecting'
+          ? 'var(--dash-text-muted)'
+          : '#ef4444';
+
+  return (
+    <div
+      className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full border"
+      style={{
+        backgroundColor: `${color}18`,
+        borderColor: color,
+        borderWidth: '0.5px',
+      }}
+    >
+      <div
+        className="w-2 h-2 rounded-full"
+        style={{
+          backgroundColor: color,
+          boxShadow: `0 0 6px ${color}`,
+          animation: status === 'live' ? 'pulse 2s infinite' : 'none',
+        }}
+      />
+      <span className="text-xs font-bold" style={{ color }}>
+        {label}
+      </span>
+      {latency !== undefined && status === 'live' && (
+        <span className="text-[10px] hidden sm:inline" style={{ color: 'var(--dash-text-muted)' }}>
+          {latency}ms
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Dashboard (needs data already loaded)
+// ---------------------------------------------------------------------------
+
+interface DashboardProps {
+  locos: LocoViewModel[];
+  routes: RouteInfo[];
+  onRouteCreated: (route: RouteInfo) => void;
+}
+
+function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardProps) {
   const { theme, toggleTheme } = useTheme();
-  const [currentTime] = useState('14:32:08');
+  const [currentTime, setCurrentTime] = useState(() =>
+    new Date().toLocaleTimeString('ru-RU'),
+  );
   const [chatDrawerOpen, setChatDrawerOpen] = useState(false);
+  const [showCreateRoute, setShowCreateRoute] = useState(false);
   const [showPredictiveAlert, setShowPredictiveAlert] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [alertExpanded, setAlertExpanded] = useState(false);
 
-  // Locomotives list
-  const locomotives: Locomotive[] = [
-    {
-      id: 'kz8a-0044',
-      name: 'KZ8A-0044',
-      route: 'Астана → Қарағанды',
-      type: 'KZ8A',
-      status: 'ok',
-      healthIndex: 80,
-      speed: 74,
-      hasAlert: true
-    },
-    {
-      id: 'kz8a-0031',
-      name: 'KZ8A-0031',
-      route: 'Қарағанды → Балқаш',
-      type: 'KZ8A',
-      status: 'warn',
-      healthIndex: 72,
-      speed: 65,
-      hasAlert: false
-    },
-    {
-      id: 'te33a-0012',
-      name: 'ТЭ33А-0012',
-      route: 'Алматы → Шымкент',
-      type: 'ТЭ33А',
-      status: 'critical',
-      healthIndex: 58,
-      speed: 48,
-      hasAlert: true
-    },
-    {
-      id: 'te33a-0008',
-      name: 'ТЭ33А-0008',
-      route: 'Астана → Петропавл',
-      type: 'ТЭ33А',
-      status: 'ok',
-      healthIndex: 92,
-      speed: 82,
-      hasAlert: false
+  // All routes (mutated when user adds a new one)
+  const [routes, setRoutes] = useState<RouteInfo[]>(initialRoutes);
+
+  // Selected route from dropdown
+  const [selectedRoute, setSelectedRoute] = useState<RouteInfo | null>(initialRoutes[0] ?? null);
+
+  // Keep selectedLoco in sync with selected route's locomotive_type
+  const selectedLoco = locos.find((l) => l.id === selectedRoute?.locomotive_type) ?? locos[0];
+
+  const [telemetry, setTelemetry] = useState<TelemetryHistoryItem | null>(null);
+  const [connStatus, setConnStatus] = useState<ConnStatus>('connecting');
+  const [latency, setLatency] = useState<number | undefined>();
+
+  // History events (last 20)
+  const [historyEvents, setHistoryEvents] = useState<TelemetryHistoryItem[]>([]);
+
+  // Refs for cleanup
+  const wsCleanupRef = useRef<(() => void) | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // When routes list updates (e.g. new route created), update selectedRoute if none selected
+  useEffect(() => {
+    if (!selectedRoute && routes.length > 0) {
+      setSelectedRoute(routes[0]);
     }
-  ];
+  }, [routes, selectedRoute]);
 
-  const [selectedLocomotive, setSelectedLocomotive] = useState<Locomotive>(locomotives[0]);
+  // Clock tick
+  useEffect(() => {
+    const id = setInterval(
+      () => setCurrentTime(new Date().toLocaleTimeString('ru-RU')),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, []);
 
-  // Get alert data for selected locomotive
-  const getAlertData = (locoId: string) => {
-    const alerts: Record<string, { title: string; subtitle: string; aiTitle: string; aiText: string; indexChange: string }> = {
-      'kz8a-0044': {
-        title: 'ALERT · ТЭД №3 перегрев',
-        subtitle: '108°C > порог 100°C · Активен 4 мин',
-        aiTitle: 'Повышенная температура ТЭД №3',
-        aiText: 'Температура третьего тягового двигателя достигла 108°C и продолжает расти. Вероятная причина — затяжной подъём на текущем участке маршрута при высокой нагрузке тяги. Рекомендую снизить тягу на 10–15% и дать режим выбега на 2–3 минуты для охлаждения.',
-        indexChange: '80→74'
+  // -------------------------------------------------------------------------
+  // Fetch latest telemetry + subscribe via WebSocket
+  // Keyed on selectedRoute.id so switching route resets everything
+  // -------------------------------------------------------------------------
+  const locoId = selectedRoute?.locomotive_type ?? selectedLoco?.id ?? '';
+  const routeId = selectedRoute?.id ?? '';
+
+  const fetchLatest = useCallback(async () => {
+    if (!locoId) return;
+    try {
+      const start = Date.now();
+      const data = await getLatestTelemetry(locoId);
+      setLatency(Date.now() - start);
+      setTelemetry(data);
+      setConnStatus((prev) => (prev === 'connecting' ? 'polling' : prev));
+    } catch {
+      // 404 = no data yet, keep polling
+    }
+  }, [locoId]);
+
+  const fetchHistory = useCallback(async () => {
+    if (!locoId) return;
+    try {
+      const to = new Date().toISOString();
+      const from = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const data = await getTelemetryHistory(locoId, from, to, 'raw');
+      setHistoryEvents(data.slice(-20).reverse());
+    } catch {
+      // ignore
+    }
+  }, [locoId]);
+
+  useEffect(() => {
+    // Reset on route change
+    setTelemetry(null);
+    setConnStatus('connecting');
+    setLatency(undefined);
+
+    wsCleanupRef.current?.();
+    if (pollingRef.current) clearInterval(pollingRef.current);
+
+    if (!routeId) return;
+
+    // Try WebSocket on the selected route
+    wsCleanupRef.current = connectRouteWebSocket(
+      routeId,
+      (raw: unknown) => {
+        const frame = raw as TelemetryFrame;
+        setTelemetry({
+          timestamp: frame.timestamp,
+          speed: frame.speed,
+          health_index: frame.health_index,
+          state: frame.state,
+          parameters: frame.parameters,
+        });
+        setConnStatus('live');
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+        }
       },
-      'te33a-0012': {
-        title: 'ALERT · Перегрев дизеля',
-        subtitle: '96°C > порог 90°C · Активен 12 мин',
-        aiTitle: 'Критическая температура дизеля',
-        aiText: 'Дизель-генератор перегрет из-за длительной работы на максимальной мощности. Система охлаждения не справляется. Рекомендуется снизить нагрузку на 20% и проверить уровень охлаждающей жидкости при следующей остановке.',
-        indexChange: '58→51'
+      (wsStatus: 'open' | 'closed' | 'error') => {
+        if (wsStatus === 'open') setConnStatus('live');
+        if (wsStatus === 'closed' || wsStatus === 'error') {
+          setConnStatus('polling');
+        }
+      },
+    );
+
+    // Seed: generate a first frame so the simulator wakes up and DB has data
+    // This calls POST /api/routes/{id}/generate which stores one frame immediately
+    const seedAndPoll = async () => {
+      try {
+        await generateTelemetryForRoute(routeId);
+      } catch {
+        // ignore if route not found or already running
       }
+      // After seeding, fetch latest and start polling
+      void fetchLatest();
+      void fetchHistory();
+      pollingRef.current = setInterval(() => void fetchLatest(), 2000);
     };
-    return alerts[locoId] || alerts['kz8a-0044'];
-  };
 
-  const currentAlert = getAlertData(selectedLocomotive.id);
+    void seedAndPoll();
 
-  // Get route data for selected locomotive
-  const getRouteData = (locoId: string) => {
-    const routes: Record<string, { stations: string[]; currentKm: number; totalKm: number }> = {
-      'kz8a-0044': { stations: ['Астана', 'Қарағанды'], currentKm: 187, totalKm: 460 },
-      'kz8a-0031': { stations: ['Қарағанды', 'Балқаш'], currentKm: 142, totalKm: 380 },
-      'te33a-0012': { stations: ['Алматы', 'Шымкент'], currentKm: 320, totalKm: 520 },
-      'te33a-0008': { stations: ['Астана', 'Петропавл'], currentKm: 215, totalKm: 435 }
+    return () => {
+      wsCleanupRef.current?.();
+      if (pollingRef.current) clearInterval(pollingRef.current);
     };
-    return routes[locoId] || routes['kz8a-0044'];
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId]);
 
-  const currentRoute = getRouteData(selectedLocomotive.id);
+  // -------------------------------------------------------------------------
+  // Derived display values (real data or fallback to ViewModel defaults)
+  // -------------------------------------------------------------------------
+  const liveSpeed = telemetry?.speed ?? selectedLoco.speed;
+  const liveHealth = telemetry?.health_index ?? selectedLoco.healthIndex;
+  const liveState = telemetry?.state ?? null;
+  const liveStatus = toStatus(liveState);
 
-  // Get predictive message for selected locomotive
-  const getPredictiveMessage = (locoId: string) => {
-    const messages: Record<string, string | null> = {
-      'kz8a-0044': 'Прогноз · Темп. трансформатора растёт +1.8°C/мин → критично через ~11 мин',
-      'kz8a-0031': 'Прогноз · Напряжение КС падает −0.3 кВ/мин → критично через ~18 мин',
-      'te33a-0012': 'Прогноз · Давление масла падает −0.2 бар/мин → критично через ~8 мин',
-      'te33a-0008': null // No predictive alert for this locomotive
-    };
-    return messages[locoId];
-  };
-
-  const predictiveMessage = getPredictiveMessage(selectedLocomotive.id);
-
-  // Export history events as CSV
+  // -------------------------------------------------------------------------
+  // Export CSV
+  // -------------------------------------------------------------------------
   const exportHistoryCSV = () => {
-    const events = [
-      { timestamp: '14:32:04', title: 'Алерт: ТЭД №3 перегрев', description: '108°C › порог 100°C', badge: 'active' },
-      { timestamp: '14:28:41', title: 'Индекс здоровья: 91 → 80', description: 'Рост темп. ТЭД №3', badge: 'warning' },
-      { timestamp: '14:22:10', title: 'Рекуперация активирована', description: 'Торможение на спуске', badge: 'ok' },
-      { timestamp: '14:17:55', title: 'Скорость: 52 → 74 км/ч', description: 'Разгон на перегоне', badge: 'ok' },
-    ];
-
-    const csvContent = [
-      ['Время', 'Событие', 'Описание', 'Статус'],
-      ...events.map(e => [e.timestamp, e.title, e.description, e.badge])
-    ].map(row => row.join(',')).join('\n');
-
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `KZ8A-0044_history_${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
+    if (selectedRoute) {
+      const from = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const url = getRouteTelemetryExportUrl(selectedRoute.id, from);
+      window.open(url, '_blank');
+    } else {
+      const csvContent = [
+        ['Время', 'Скорость (км/ч)', 'Индекс здоровья', 'Состояние'],
+        ...historyEvents.map((e) => [
+          new Date(e.timestamp).toLocaleTimeString('ru-RU'),
+          e.speed.toFixed(1),
+          e.health_index.toFixed(1),
+          e.state,
+        ]),
+      ]
+        .map((row) => row.join(','))
+        .join('\n');
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `telemetry_${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+    }
   };
+
+  // Derived display
+  const stationList = selectedRoute
+    ? [selectedRoute.from_city, selectedRoute.to_city]
+    : ['-', '-'];
 
   return (
-    <div className="min-h-screen overflow-y-auto p-2 sm:p-4" style={{
-      backgroundColor: 'var(--dash-bg-page)',
-      color: 'var(--dash-text-primary)',
-      fontFamily: 'Manrope, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-    }}>
+    <div
+      className="min-h-screen overflow-y-auto p-2 sm:p-4"
+      style={{
+        backgroundColor: 'var(--dash-bg-page)',
+        color: 'var(--dash-text-primary)',
+        fontFamily:
+          'Manrope, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      }}
+    >
       {/* Top Bar */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 pb-3 border-b" style={{
-        borderColor: 'var(--dash-border)',
-        borderBottomWidth: '0.5px'
-      }}>
+      <div
+        className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 pb-3 border-b"
+        style={{ borderColor: 'var(--dash-border)', borderBottomWidth: '0.5px' }}
+      >
+        {/* Left: status + loco name */}
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          <div className="w-2 h-2 rounded-full" style={{
-            backgroundColor: selectedLocomotive.status === 'ok' ? 'var(--dash-status-ok)' : selectedLocomotive.status === 'warn' ? 'var(--dash-status-warn)' : '#ef4444',
-            boxShadow: `0 0 6px ${selectedLocomotive.status === 'ok' ? 'var(--dash-status-ok)' : selectedLocomotive.status === 'warn' ? 'var(--dash-status-warn)' : '#ef4444'}`
-          }} />
-          <span className="font-semibold text-base sm:text-lg" style={{ color: 'var(--dash-text-primary)' }}>{selectedLocomotive.name}</span>
-          <span className="text-xs sm:text-sm font-medium hidden sm:inline" style={{ color: 'var(--dash-text-secondary)' }}>· {selectedLocomotive.route}</span>
+          <div
+            className="w-2 h-2 rounded-full"
+            style={{
+              backgroundColor:
+                liveStatus === 'ok' ? 'var(--dash-status-ok)'
+                : liveStatus === 'warn' ? 'var(--dash-status-warn)'
+                : '#ef4444',
+              boxShadow: `0 0 6px ${
+                liveStatus === 'ok' ? 'var(--dash-status-ok)'
+                : liveStatus === 'warn' ? 'var(--dash-status-warn)'
+                : '#ef4444'
+              }`,
+            }}
+          />
+          <span className="font-semibold text-base sm:text-lg" style={{ color: 'var(--dash-text-primary)' }}>
+            {selectedRoute
+              ? `${selectedRoute.locomotive_type.toUpperCase()}`
+              : (selectedLoco?.name ?? 'KTZ')}
+          </span>
+          {selectedRoute && (
+            <span className="text-xs sm:text-sm font-medium hidden sm:inline" style={{ color: 'var(--dash-text-secondary)' }}>
+              · {selectedRoute.name}
+            </span>
+          )}
         </div>
 
-        <LocomotiveDropdown
-          selected={selectedLocomotive}
-          locomotives={locomotives}
-          onSelect={setSelectedLocomotive}
+        {/* Center: route picker */}
+        <RouteDropdown
+          selected={selectedRoute}
+          routes={routes}
+          onSelect={(route) => {
+            setSelectedRoute(route);
+          }}
+          onAdd={() => setShowCreateRoute(true)}
         />
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Connection Status Indicator */}
-          <div className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full border" style={{
-            backgroundColor: 'rgba(34, 197, 94, 0.1)',
-            borderColor: 'var(--dash-status-ok)',
-            borderWidth: '0.5px'
-          }}>
-            <div className="w-2 h-2 rounded-full animate-pulse" style={{
-              backgroundColor: 'var(--dash-status-ok)',
-              boxShadow: '0 0 6px var(--dash-status-ok)'
-            }} />
-            <span className="text-xs font-bold" style={{ color: 'var(--dash-status-ok)' }}>LIVE</span>
-            <span className="text-[10px] hidden sm:inline" style={{ color: 'var(--dash-text-muted)' }}>24ms</span>
-          </div>
+          <ConnectionBadge status={connStatus} latency={latency} />
 
           <button
             onClick={toggleTheme}
@@ -199,7 +457,7 @@ function Dashboard() {
               borderColor: 'var(--dash-gold)',
               borderWidth: '1px',
               color: 'var(--dash-gold)',
-              backgroundColor: 'rgba(240, 192, 64, 0.1)'
+              backgroundColor: 'rgba(240, 192, 64, 0.1)',
             }}
             title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
           >
@@ -214,7 +472,7 @@ function Dashboard() {
             )}
           </button>
           <div className="text-xs sm:text-sm font-medium" style={{ color: 'var(--dash-text-muted)' }}>
-            {currentTime} <span className="hidden sm:inline">· обновл. 1с</span>
+            {currentTime} <span className="hidden sm:inline">· обновл. 2с</span>
           </div>
         </div>
       </div>
@@ -224,291 +482,295 @@ function Dashboard() {
         <TabBar
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          hasMotorAlert={selectedLocomotive.hasAlert}
+          hasMotorAlert={liveStatus === 'critical'}
         />
       </div>
 
       {/* Tab Content: Overview */}
       {activeTab === 'overview' && (
         <>
-          {/* Predictive Alert Strip - thin informational banner */}
-          {showPredictiveAlert && predictiveMessage && (
+          {showPredictiveAlert && liveStatus !== 'ok' && (
             <PredictiveAlertStrip
-              message={predictiveMessage}
+              message={`Прогноз · Состояние локомотива: ${liveState ?? 'неизвестно'}`}
               onDismiss={() => setShowPredictiveAlert(false)}
             />
           )}
 
-          {/* Active Alert with expandable AI explanation */}
-          {selectedLocomotive.hasAlert && (
-          <div className="border-l-4 border rounded-lg p-2.5 mb-3" style={{
-            backgroundColor: 'rgba(239, 68, 68, 0.08)',
-            borderColor: '#ef4444',
-            borderWidth: '0.5px',
-            borderLeftWidth: '3px',
-            borderLeftColor: '#ef4444'
-          }}>
-            {/* Top row: icon, title, time, close */}
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0" style={{
-                  backgroundColor: 'rgba(239, 68, 68, 0.15)',
-                  borderWidth: '0.5px',
-                  borderColor: '#ef4444'
-                }}>
-                  <svg className="w-4 h-4" style={{ color: '#ef4444' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+          {/* Active Alert */}
+          {liveStatus === 'critical' && (
+            <div
+              className="border-l-4 border rounded-lg p-2.5 mb-3"
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                borderColor: '#ef4444',
+                borderWidth: '0.5px',
+                borderLeftWidth: '3px',
+                borderLeftColor: '#ef4444',
+              }}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0"
+                    style={{
+                      backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                      borderWidth: '0.5px',
+                      borderColor: '#ef4444',
+                    }}
+                  >
+                    <svg className="w-4 h-4" style={{ color: '#ef4444' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                    </svg>
+                  </div>
+                  <div className="font-bold text-sm" style={{ color: '#ff6b6b' }}>
+                    ALERT · {selectedLoco.name} — критическое состояние
+                  </div>
                 </div>
-                <div className="font-bold text-sm" style={{ color: '#ff6b6b' }}>
-                  {currentAlert.title}
+                <div className="text-[10px]" style={{ color: 'var(--dash-text-muted)' }}>
+                  {currentTime}
                 </div>
               </div>
-              <div className="flex items-center gap-1.5">
-                <div className="text-[10px]" style={{ color: 'var(--dash-text-muted)' }}>14:32:04</div>
-                <button className="w-4 h-4 flex items-center justify-center transition-colors" style={{ color: 'var(--dash-text-muted)' }}>
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              <div className="text-xs font-medium mb-2" style={{ color: '#fca5a5', paddingLeft: '36px' }}>
+                Состояние: {liveState} · Индекс здоровья: {Math.round(liveHealth)}
+              </div>
+              <div style={{ paddingLeft: '36px' }}>
+                <button
+                  onClick={() => setAlertExpanded(!alertExpanded)}
+                  className="px-3 py-1.5 text-xs border rounded transition-all font-semibold flex items-center gap-1.5"
+                  style={{
+                    borderColor: 'var(--dash-border)',
+                    borderWidth: '0.5px',
+                    color: 'var(--dash-text-secondary)',
+                    backgroundColor: 'transparent',
+                  }}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                   </svg>
+                  {alertExpanded ? 'Скрыть' : 'Узнать причину'}
                 </button>
               </div>
-            </div>
-
-            {/* Second row: gray subtitle */}
-            <div className="text-xs font-medium mb-2" style={{ color: '#fca5a5', paddingLeft: '36px' }}>
-              {currentAlert.subtitle}
-            </div>
-
-            {/* Third row: AI button */}
-            <div style={{ paddingLeft: '36px' }}>
-              <button
-                onClick={() => setAlertExpanded(!alertExpanded)}
-                className="px-3 py-1.5 text-xs border rounded transition-all font-semibold flex items-center gap-1.5"
-                style={{
-                  borderColor: 'var(--dash-border)',
-                  borderWidth: '0.5px',
-                  color: 'var(--dash-text-secondary)',
-                  backgroundColor: 'transparent'
-                }}
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                </svg>
-                {alertExpanded ? 'Скрыть объяснение' : 'Узнать причину'}
-              </button>
-            </div>
-
-            {/* Expandable AI explanation */}
-            {alertExpanded && (
-              <div className="mt-3 pt-3 border-t" style={{
-                borderColor: 'rgba(239, 68, 68, 0.2)',
-                borderTopWidth: '0.5px',
-                paddingLeft: '36px'
-              }}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-2">
-                    <div className="px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0" style={{
-                      backgroundColor: 'var(--dash-gold)',
-                      color: 'white'
-                    }}>
-                      AI
-                    </div>
-                    <div>
-                      <div className="text-xs font-semibold mb-1" style={{ color: 'var(--dash-text-primary)' }}>
-                        {currentAlert.aiTitle}
-                      </div>
-                      <div className="text-xs" style={{ color: 'var(--dash-text-secondary)', lineHeight: '1.5' }}>
-                        {currentAlert.aiText}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                    <div className="text-[10px] font-medium px-2 py-0.5 rounded" style={{
-                      backgroundColor: 'rgba(239, 68, 68, 0.15)',
-                      color: '#ef4444'
-                    }}>
-                      {currentAlert.indexChange}
-                    </div>
-                    <div className="text-[9px]" style={{ color: 'var(--dash-text-muted)' }}>14:32:06</div>
+              {alertExpanded && (
+                <div
+                  className="mt-3 pt-3 border-t"
+                  style={{ borderColor: 'rgba(239,68,68,0.2)', borderTopWidth: '0.5px', paddingLeft: '36px' }}
+                >
+                  <div className="text-xs" style={{ color: 'var(--dash-text-secondary)', lineHeight: '1.5' }}>
+                    Телеметрия указывает на критическое состояние локомотива{' '}
+                    {selectedLoco.name}. Индекс здоровья: {Math.round(liveHealth)}.
+                    Скорость: {Math.round(liveSpeed)} км/ч.
+                    Рекомендуется немедленная проверка параметров.
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
           )}
 
-          {/* Key Metrics - responsive layout */}
+          {/* Key Metrics */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
-            {/* Left Column: Health Index (full height) */}
-            <div className="border rounded-lg p-3 sm:p-4 flex flex-col" style={{
-              backgroundColor: 'var(--dash-bg-card)',
-              borderColor: 'var(--dash-border)',
-              borderWidth: '0.5px'
-            }}>
-              <div className="text-xs mb-3 font-semibold uppercase tracking-wider" style={{ color: 'var(--dash-text-primary)' }}>Индекс здоровья</div>
-              <div className="mb-4">
-                <CircularGauge value={selectedLocomotive.healthIndex} label="Индекс здоровья" />
-              </div>
-              <div className="pt-3 border-t flex-1" style={{
+            {/* Health Index */}
+            <div
+              className="border rounded-lg p-3 sm:p-4 flex flex-col"
+              style={{
+                backgroundColor: 'var(--dash-bg-card)',
                 borderColor: 'var(--dash-border)',
-                borderTopWidth: '0.5px'
-              }}>
-                <div className="text-xs mb-2 font-semibold uppercase tracking-wider" style={{ color: 'var(--dash-text-primary)' }}>Топ факторы влияния</div>
+                borderWidth: '0.5px',
+              }}
+            >
+              <div
+                className="text-xs mb-3 font-semibold uppercase tracking-wider"
+                style={{ color: 'var(--dash-text-primary)' }}
+              >
+                Индекс здоровья
+              </div>
+              <div className="mb-4">
+                <CircularGauge value={Math.round(liveHealth)} label="Индекс здоровья" />
+              </div>
+              <div
+                className="pt-3 border-t flex-1"
+                style={{ borderColor: 'var(--dash-border)', borderTopWidth: '0.5px' }}
+              >
+                <div
+                  className="text-xs mb-2 font-semibold uppercase tracking-wider"
+                  style={{ color: 'var(--dash-text-primary)' }}
+                >
+                  Параметры телеметрии
+                </div>
                 <div className="flex flex-col gap-1.5">
-                  <FactorRow name="Температура ТЭД" barWidth={67} delta={-8} status="ok" />
-                  <FactorRow name="Напряжение КС" barWidth={50} delta={-5} status="ok" />
-                  <FactorRow name="Ток ТЭД" barWidth={33} delta={-4} status="warn" />
-                  <FactorRow name="Давление тормозов" barWidth={17} delta={-3} status="ok" />
-                  <FactorRow name="Темп. трансформатора" barWidth={0} delta={-2} status="ok" />
+                  {telemetry?.parameters && Object.keys(telemetry.parameters).length > 0 ? (
+                    Object.entries(telemetry.parameters)
+                      .slice(0, 5)
+                      .map(([key, val]) => (
+                        <FactorRow
+                          key={key}
+                          name={key}
+                          barWidth={Math.min(100, Math.abs(Number(val) || 0))}
+                          delta={0}
+                          status="ok"
+                        />
+                      ))
+                  ) : (
+                    <>
+                      <FactorRow name="Скорость" barWidth={Math.round((liveSpeed / 120) * 100)} delta={0} status="ok" />
+                      <FactorRow name="Индекс здоровья" barWidth={Math.round(liveHealth)} delta={0} status={liveHealth < 70 ? 'warn' : 'ok'} />
+                    </>
+                  )}
                 </div>
               </div>
             </div>
 
-            {/* Right Column: Speed and Route */}
+            {/* Speed + Route */}
             <div className="space-y-3">
-              {/* Speed and Traction */}
-              <div className="border rounded-lg p-3 sm:p-4" style={{
-                backgroundColor: 'var(--dash-bg-card)',
-                borderColor: 'var(--dash-border)',
-                borderWidth: '0.5px'
-              }}>
-                <div className="text-xs mb-3 font-semibold uppercase tracking-wider" style={{ color: 'var(--dash-text-primary)' }}>Скорость и тяга</div>
+              <div
+                className="border rounded-lg p-3 sm:p-4"
+                style={{
+                  backgroundColor: 'var(--dash-bg-card)',
+                  borderColor: 'var(--dash-border)',
+                  borderWidth: '0.5px',
+                }}
+              >
+                <div
+                  className="text-xs mb-3 font-semibold uppercase tracking-wider"
+                  style={{ color: 'var(--dash-text-primary)' }}
+                >
+                  Скорость и тяга
+                </div>
 
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mb-3">
-                  <ArcGauge value={selectedLocomotive.speed} max={120} unit="км/ч" />
+                  <ArcGauge value={Math.round(liveSpeed)} max={120} unit="км/ч" />
 
                   <div className="flex flex-col gap-2 sm:ml-4 w-full sm:w-auto">
-                    <div className="flex items-center justify-center sm:justify-start gap-2 px-3 py-1.5 rounded-full" style={{
-                      backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                      borderColor: 'var(--dash-status-ok)',
-                      borderWidth: '0.5px'
-                    }}>
-                      <svg className="w-4 h-4" style={{ color: 'var(--dash-status-ok)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                      </svg>
-                      <span className="text-xs font-bold" style={{ color: 'var(--dash-status-ok)' }}>Разгон</span>
+                    <div
+                      className="flex items-center justify-center sm:justify-start gap-2 px-3 py-1.5 rounded-full"
+                      style={{
+                        backgroundColor:
+                          liveStatus === 'ok'
+                            ? 'rgba(34,197,94,0.1)'
+                            : 'rgba(239,68,68,0.1)',
+                        borderColor:
+                          liveStatus === 'ok'
+                            ? 'var(--dash-status-ok)'
+                            : '#ef4444',
+                        borderWidth: '0.5px',
+                      }}
+                    >
+                      <span
+                        className="text-xs font-bold"
+                        style={{
+                          color:
+                            liveStatus === 'ok'
+                              ? 'var(--dash-status-ok)'
+                              : '#ef4444',
+                        }}
+                      >
+                        {liveState ?? 'Нет данных'}
+                      </span>
                     </div>
 
                     <div className="flex gap-4 justify-center sm:justify-start sm:flex-col sm:gap-1">
                       <div className="flex items-baseline gap-1">
-                        <span className="text-xs" style={{ color: 'var(--dash-text-muted)' }}>Средняя:</span>
-                        <span className="text-sm font-bold" style={{ color: 'var(--dash-text-primary)' }}>68 км/ч</span>
+                        <span className="text-xs" style={{ color: 'var(--dash-text-muted)' }}>
+                          Макс.:
+                        </span>
+                        <span className="text-sm font-bold" style={{ color: 'var(--dash-text-primary)' }}>
+                          {selectedLoco.type === 'electric' ? '120' : '120'} км/ч
+                        </span>
                       </div>
                       <div className="flex items-baseline gap-1">
-                        <span className="text-xs" style={{ color: 'var(--dash-text-muted)' }}>Макс.:</span>
-                        <span className="text-sm font-bold" style={{ color: 'var(--dash-text-primary)' }}>82 км/ч</span>
+                        <span className="text-xs" style={{ color: 'var(--dash-text-muted)' }}>
+                          Мощность:
+                        </span>
+                        <span className="text-sm font-bold" style={{ color: 'var(--dash-text-primary)' }}>
+                          {selectedLoco.type === 'electric' ? '8800' : '3356'} кВт
+                        </span>
                       </div>
                     </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <MetricCell value="612" unit="кН" label="Сила тяги" status="ok" />
-                  <MetricCell value="4200" unit="кВт" label="Рекуперация" status="ok" />
+                  <MetricCell
+                    value={telemetry ? String(Math.round(liveHealth)) : '—'}
+                    unit="%"
+                    label="Здоровье"
+                    status={liveHealth >= 80 ? 'ok' : liveHealth >= 60 ? 'warn' : 'crit'}
+                  />
+                  <MetricCell
+                    value={telemetry ? String(Math.round(liveSpeed)) : '—'}
+                    unit="км/ч"
+                    label="Скорость"
+                    status="ok"
+                  />
                 </div>
               </div>
 
-              {/* Route */}
-              <div className="border rounded-lg p-3 sm:p-4" style={{
-                backgroundColor: 'var(--dash-bg-card)',
-                borderColor: 'var(--dash-border)',
-                borderWidth: '0.5px'
-              }}>
-                <div className="text-xs mb-3 font-semibold uppercase tracking-wider" style={{ color: 'var(--dash-text-primary)' }}>Маршрут</div>
-                <RouteMap
-                  stationList={currentRoute.stations}
-                  currentKm={currentRoute.currentKm}
-                  totalKm={currentRoute.totalKm}
-                />
+              {/* Route Map */}
+              <div
+                className="border rounded-lg p-3 sm:p-4"
+                style={{
+                  backgroundColor: 'var(--dash-bg-card)',
+                  borderColor: 'var(--dash-border)',
+                  borderWidth: '0.5px',
+                }}
+              >
+                <div
+                  className="text-xs mb-3 font-semibold uppercase tracking-wider"
+                  style={{ color: 'var(--dash-text-primary)' }}
+                >
+                  Маршрут
+                </div>
+                {selectedRoute ? (
+                  <RouteMap
+                    stationList={stationList}
+                    currentKm={Math.round(liveSpeed * 2)}
+                    totalKm={500}
+                  />
+                ) : (
+                  <div
+                    className="text-xs text-center py-4"
+                    style={{ color: 'var(--dash-text-muted)' }}
+                  >
+                    Маршрут не назначен
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Historical Replay Controls */}
-          <div className="border rounded-lg p-3 sm:p-4 mt-3" style={{
-            backgroundColor: 'var(--dash-bg-card)',
-            borderColor: 'var(--dash-border)',
-            borderWidth: '0.5px'
-          }}>
-            {/* Timeline Slider */}
+          {/* Playback stub */}
+          <div
+            className="border rounded-lg p-3 sm:p-4 mt-3"
+            style={{
+              backgroundColor: 'var(--dash-bg-card)',
+              borderColor: 'var(--dash-border)',
+              borderWidth: '0.5px',
+            }}
+          >
             <div className="relative mb-3 sm:mb-4">
-              <div className="relative h-1.5 rounded-full cursor-pointer" style={{ backgroundColor: 'rgba(156, 163, 175, 0.3)' }}>
-                {/* Played portion */}
-                <div className="absolute left-0 top-0 bottom-0 rounded-full" style={{
-                  backgroundColor: 'var(--dash-accent)',
-                  width: '32%'
-                }} />
-
-                {/* Playhead handle */}
-                <div className="absolute top-1/2 -translate-y-1/2 cursor-grab active:cursor-grabbing" style={{
-                  left: '32%',
-                  transform: 'translate(-50%, -50%)'
-                }}>
-                  <div className="w-4 h-4 rounded-full border-2 transition-all hover:scale-110 ml-[0px] mr-[-9px] mt-[0px] mb-[-7px]" style={{
-                    backgroundColor: 'var(--dash-accent)',
-                    borderColor: 'white',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-                  }} />
-                </div>
+              <div
+                className="relative h-1.5 rounded-full cursor-pointer"
+                style={{ backgroundColor: 'rgba(156, 163, 175, 0.3)' }}
+              >
+                <div
+                  className="absolute left-0 top-0 bottom-0 rounded-full"
+                  style={{ backgroundColor: 'var(--dash-accent)', width: '32%' }}
+                />
               </div>
             </div>
-
-            {/* Controls Row */}
             <div className="flex items-center justify-between gap-2">
-              {/* Current time - left */}
-              <div className="text-xs sm:text-sm font-medium" style={{
-                color: 'var(--dash-text-secondary)',
-                fontFamily: 'monospace',
-                minWidth: '40px sm:60px'
-              }}>
-                0:32
+              <div
+                className="text-xs sm:text-sm font-medium"
+                style={{ color: 'var(--dash-text-secondary)', fontFamily: 'monospace' }}
+              >
+                LIVE
               </div>
-
-              {/* Playback controls - center */}
-              <div className="flex items-center gap-2 sm:gap-3">
-                {/* Skip backward */}
-                <button className="w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded transition-colors hover:bg-opacity-10" style={{
-                  color: 'var(--dash-text-secondary)'
-                }}>
-                  <svg className="w-4 sm:w-5 h-4 sm:h-5" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6h-2c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
-                    <text x="12" y="15" textAnchor="middle" fontSize="8" fontWeight="bold" fill="currentColor">10</text>
-                  </svg>
-                </button>
-
-                {/* Play button (large, primary) */}
-                <button className="w-12 h-12 sm:w-14 sm:h-14 flex items-center justify-center rounded-full transition-all hover:scale-105 shadow-lg" style={{
-                  backgroundColor: 'var(--dash-accent)',
-                  color: 'white'
-                }}>
-                  <svg className="w-5 h-5 sm:w-6 sm:h-6 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </button>
-
-                {/* Skip forward */}
-                <button className="w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded transition-colors hover:bg-opacity-10" style={{
-                  color: 'var(--dash-text-secondary)'
-                }}>
-                  <svg className="w-4 sm:w-5 h-4 sm:h-5" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/>
-                    <text x="12" y="15" textAnchor="middle" fontSize="8" fontWeight="bold" fill="currentColor">10</text>
-                  </svg>
-                </button>
-              </div>
-
-              {/* Total time - right */}
-              <div className="text-xs sm:text-sm font-medium text-right" style={{
-                color: 'var(--dash-text-secondary)',
-                fontFamily: 'monospace',
-                minWidth: '40px sm:60px'
-              }}>
-                4:05
+              <div
+                className="text-xs sm:text-sm font-medium"
+                style={{ color: 'var(--dash-text-secondary)', fontFamily: 'monospace' }}
+              >
+                {currentTime}
               </div>
             </div>
-
-            {/* Time Range Selector */}
-            
           </div>
         </>
       )}
@@ -516,45 +778,55 @@ function Dashboard() {
       {/* Tab Content: Motors */}
       {activeTab === 'motors' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          <MotorDetailCard label="ТЭД 1" temp={92} current={480} status="ok" />
-          <MotorDetailCard label="ТЭД 2" temp={89} current={475} status="ok" />
-          <MotorDetailCard label="ТЭД 3" temp={108} current={530} status="warn" />
-          <MotorDetailCard label="ТЭД 4" temp={91} current={485} status="ok" />
-          <MotorDetailCard label="ТЭД 5" temp={88} current={470} status="ok" />
-          <MotorDetailCard label="ТЭД 6" temp={93} current={490} status="ok" />
-          <MotorDetailCard label="ТЭД 7" temp={90} current={480} status="ok" />
-          <MotorDetailCard label="ТЭД 8" temp={87} current={465} status="ok" />
+          {Array.from({ length: 8 }, (_, i) => (
+            <MotorDetailCard
+              key={i}
+              label={`ТЭД ${i + 1}`}
+              temp={85 + Math.round(Math.random() * 20)}
+              current={470 + Math.round(Math.random() * 60)}
+              status={liveStatus === 'critical' && i === 2 ? 'warn' : 'ok'}
+            />
+          ))}
         </div>
       )}
 
       {/* Tab Content: Electrics */}
       {activeTab === 'electrics' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          <div className="border rounded-[10px] p-5" style={{
-            backgroundColor: 'var(--dash-bg-card)',
-            borderColor: 'var(--dash-border)',
-            boxShadow: 'var(--dash-shadow)'
-          }}>
-            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>Контактная сеть</div>
+          <div
+            className="border rounded-[10px] p-5"
+            style={{
+              backgroundColor: 'var(--dash-bg-card)',
+              borderColor: 'var(--dash-border)',
+              boxShadow: 'var(--dash-shadow)',
+            }}
+          >
+            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
+              Контактная сеть
+            </div>
             <div className="flex flex-col gap-2">
               <ParamRow name="Напряжение КС" value="25.1" unit="кВ" status="ok" />
-              <ParamRow name="Ток ТЭД (средний)" value="487" unit="А" status="warn" />
-              <ParamRow name="Мощность потребления" value="4280" unit="кВт" status="ok" />
-              <ParamRow name="Рекуперация" value="4200" unit="кВт" status="ok" />
+              <ParamRow name="Ток ТЭД (средний)" value={telemetry ? String(Math.round(liveSpeed * 6.5)) : '—'} unit="А" status="ok" />
+              <ParamRow name="Мощность потребления" value={telemetry ? String(Math.round(liveSpeed * 57)) : '—'} unit="кВт" status="ok" />
+              <ParamRow name="Рекуперация" value="Активна" unit="" status="ok" />
             </div>
           </div>
 
-          <div className="border rounded-[10px] p-5" style={{
-            backgroundColor: 'var(--dash-bg-card)',
-            borderColor: 'var(--dash-border)',
-            boxShadow: 'var(--dash-shadow)'
-          }}>
-            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>Тепловые узлы</div>
+          <div
+            className="border rounded-[10px] p-5"
+            style={{
+              backgroundColor: 'var(--dash-bg-card)',
+              borderColor: 'var(--dash-border)',
+              boxShadow: 'var(--dash-shadow)',
+            }}
+          >
+            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
+              Тепловые узлы
+            </div>
             <div className="flex flex-col gap-2">
-              <ParamRow name="Темп. трансформатора" value="74" unit="°C" status="ok" />
-              <ParamRow name="Темп. инверторов" value="68" unit="°C" status="ok" />
-              <ParamRow name="Темп. выпрямителей" value="71" unit="°C" status="ok" />
-              <ParamRow name="Автоведение" value="Вкл." status="ok" />
+              <ParamRow name="Состояние" value={liveState ?? '—'} unit="" status={liveStatus === 'critical' ? 'warn' : 'ok'} />
+              <ParamRow name="Индекс здоровья" value={telemetry ? String(Math.round(liveHealth)) : '—'} unit="%" status={liveHealth < 70 ? 'warn' : 'ok'} />
+              <ParamRow name="Скорость" value={telemetry ? String(Math.round(liveSpeed)) : '—'} unit="км/ч" status="ok" />
             </div>
           </div>
         </div>
@@ -563,29 +835,39 @@ function Dashboard() {
       {/* Tab Content: Brakes */}
       {activeTab === 'brakes' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          <div className="border rounded-[10px] p-5" style={{
-            backgroundColor: 'var(--dash-bg-card)',
-            borderColor: 'var(--dash-border)',
-            boxShadow: 'var(--dash-shadow)'
-          }}>
-            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>Тормозная система</div>
+          <div
+            className="border rounded-[10px] p-5"
+            style={{
+              backgroundColor: 'var(--dash-bg-card)',
+              borderColor: 'var(--dash-border)',
+              boxShadow: 'var(--dash-shadow)',
+            }}
+          >
+            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
+              Тормозная система
+            </div>
             <div className="flex flex-col gap-2">
               <ParamRow name="Давление тормоз. магистрали" value="6.2" unit="бар" status="ok" />
               <ParamRow name="Давление питательной" value="8.1" unit="бар" status="ok" />
-              <ParamRow name="Рекуперативное торможение" value="Активно" status="ok" />
+              <ParamRow name="Рекуперативное торможение" value="Активно" unit="" status="ok" />
             </div>
           </div>
 
-          <div className="border rounded-[10px] p-5" style={{
-            backgroundColor: 'var(--dash-bg-card)',
-            borderColor: 'var(--dash-border)',
-            boxShadow: 'var(--dash-shadow)'
-          }}>
-            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>Прочие параметры</div>
+          <div
+            className="border rounded-[10px] p-5"
+            style={{
+              backgroundColor: 'var(--dash-bg-card)',
+              borderColor: 'var(--dash-border)',
+              boxShadow: 'var(--dash-shadow)',
+            }}
+          >
+            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
+              Прочие параметры
+            </div>
             <div className="flex flex-col gap-2">
-              <ParamRow name="Темп. внешнего воздуха" value="+22" unit="°C" status="ok" />
               <ParamRow name="Масса состава" value="6200" unit="т" status="ok" />
               <ParamRow name="Сила тяги макс." value="833" unit="кН" status="ok" />
+              <ParamRow name="Тип" value={selectedLoco.type} unit="" status="ok" />
             </div>
           </div>
         </div>
@@ -595,8 +877,11 @@ function Dashboard() {
       {activeTab === 'history' && (
         <div className="space-y-3 max-w-4xl">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--dash-text-primary)' }}>
-              История событий
+            <h2
+              className="text-sm font-semibold uppercase tracking-wider"
+              style={{ color: 'var(--dash-text-primary)' }}
+            >
+              История событий (последние 30 мин)
             </h2>
             <button
               onClick={exportHistoryCSV}
@@ -605,7 +890,7 @@ function Dashboard() {
                 borderColor: 'var(--dash-border)',
                 borderWidth: '0.5px',
                 color: 'var(--dash-text-secondary)',
-                backgroundColor: 'transparent'
+                backgroundColor: 'transparent',
               }}
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -614,59 +899,67 @@ function Dashboard() {
               Экспорт CSV
             </button>
           </div>
-          <EventCard
-            timestamp="14:32:04"
-            title="Алерт: ТЭД №3 перегрев"
-            description="108°C › порог 100°C"
-            badge="active"
-          />
-          <EventCard
-            timestamp="14:28:41"
-            title="Индекс здоровья: 91 → 80"
-            description="Рост темп. ТЭД №3"
-            badge="warning"
-          />
-          <EventCard
-            timestamp="14:22:10"
-            title="Рекуперация активирована"
-            description="Торможение на спуске"
-            badge="ok"
-          />
-          <EventCard
-            timestamp="14:17:55"
-            title="Скорость: 52 → 74 км/ч"
-            description="Разгон на перегоне"
-            badge="ok"
-          />
+
+          {historyEvents.length > 0 ? (
+            historyEvents.map((ev, i) => (
+              <EventCard
+                key={i}
+                timestamp={new Date(ev.timestamp).toLocaleTimeString('ru-RU')}
+                title={`Скорость: ${ev.speed.toFixed(1)} км/ч`}
+                description={`Здоровье: ${ev.health_index.toFixed(1)} · Состояние: ${ev.state}`}
+                badge={ev.health_index < 60 ? 'active' : ev.health_index < 80 ? 'warning' : 'ok'}
+              />
+            ))
+          ) : (
+            <div
+              className="text-xs text-center py-8"
+              style={{ color: 'var(--dash-text-muted)' }}
+            >
+              {telemetry === null ? 'Загрузка истории…' : 'Нет данных за последние 30 минут'}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Tab Content: AI Assistant */}
+      {/* Tab Content: AI */}
       {activeTab === 'ai' && (
         <div className="space-y-4">
           <div>
-            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>Автоматические объяснения</div>
+            <div className="text-xs mb-3" style={{ color: 'var(--dash-text-primary)' }}>
+              Автоматические объяснения
+            </div>
             <AIPanel
-              title="Повышенная температура ТЭД №3"
-              bodyText="Температура третьего тягового двигателя достигла 108°C и продолжает расти. Вероятная причина — затяжной подъём на текущем участке маршрута при высокой нагрузке тяги. Рекомендую снизить тягу на 10–15% и дать режим выбега на 2–3 минуты для охлаждения."
-              updatedAt="14:32:06"
-              indexChange="80→74"
+              title={`Анализ: ${selectedLoco.name}`}
+              bodyText={
+                telemetry
+                  ? `Последнее обновление: ${new Date(telemetry.timestamp).toLocaleTimeString('ru-RU')}. ` +
+                    `Скорость: ${telemetry.speed.toFixed(1)} км/ч. ` +
+                    `Индекс здоровья: ${telemetry.health_index.toFixed(1)}. ` +
+                    `Состояние: ${telemetry.state}. ` +
+                    (liveStatus === 'critical'
+                      ? 'Обнаружено критическое состояние. Рекомендуется немедленная проверка.'
+                      : liveStatus === 'warn'
+                        ? 'Выявлены отклонения. Рекомендуется плановое техобслуживание.'
+                        : 'Все параметры в норме. Эксплуатация разрешена.')
+                  : 'Ожидание данных с бэкенда…'
+              }
+              updatedAt={telemetry ? new Date(telemetry.timestamp).toLocaleTimeString('ru-RU') : '—'}
+              indexChange={`${Math.round(liveHealth)}`}
             />
           </div>
-
           <div className="text-xs" style={{ color: 'var(--dash-text-muted)' }}>
-            Предиктив: темп. трансформатора → критично через ~11 мин при тренде +1.8°C/мин
+            Данные обновляются каждые 2 секунды через polling или WebSocket.
           </div>
         </div>
       )}
 
-      {/* Floating AI Assistant Button */}
+      {/* Floating AI Button */}
       <button
         onClick={() => setChatDrawerOpen(true)}
         className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110"
         style={{
           backgroundColor: 'var(--dash-gold)',
-          boxShadow: '0 4px 12px rgba(240, 192, 64, 0.3)'
+          boxShadow: '0 4px 12px rgba(240, 192, 64, 0.3)',
         }}
       >
         <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="white" viewBox="0 0 24 24" strokeWidth={2}>
@@ -674,16 +967,104 @@ function Dashboard() {
         </svg>
       </button>
 
-      {/* Chat Drawer */}
       <ChatDrawer isOpen={chatDrawerOpen} onClose={() => setChatDrawerOpen(false)} />
+
+      {/* Create Route Modal */}
+      <CreateRouteModal
+        isOpen={showCreateRoute}
+        onClose={() => setShowCreateRoute(false)}
+        onCreated={(route) => {
+          setRoutes((prev) => [...prev, route]);
+          setSelectedRoute(route);
+          onRouteCreated(route);
+          setShowCreateRoute(false);
+        }}
+      />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Root — loads data before rendering Dashboard
+// ---------------------------------------------------------------------------
+
+function AppContent() {
+  const [locos, setLocos] = useState<LocoViewModel[] | null>(null);
+  const [routes, setRoutes] = useState<RouteInfo[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const [locomotiveData, routeData] = await Promise.all([
+          getLocomotives(),
+          getRoutes().catch(() => [] as RouteInfo[]),
+        ]);
+
+        if (cancelled) return;
+
+        const viewModels: LocoViewModel[] = locomotiveData.map((info: LocomotiveInfo) => {
+          const matchedRoute = routeData.find(
+            (r: RouteInfo) =>
+              r.locomotive_type === info.id ||
+              r.locomotive_type === info.type.toLowerCase(),
+          );
+          return {
+            id: info.id,
+            name: displayName(info),
+            type: info.type,
+            status: toStatus(info.current_state),
+            healthIndex: 80,
+            speed: 0,
+            hasAlert: info.current_state === 'fault',
+            route: matchedRoute,
+          };
+        });
+
+        setLocos(viewModels);
+        setRoutes(routeData);
+        setError(null);
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            `Не удалось подключиться к бэкенду. Убедитесь, что FastAPI запущен на http://localhost:8000.\n\n${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        }
+      }
+    }
+
+    void load();
+    return () => { cancelled = true; };
+  }, [attempt]);
+
+  if (error) {
+    return <ErrorScreen message={error} onRetry={() => setAttempt((n) => n + 1)} />;
+  }
+
+  if (!locos) {
+    return <Spinner />;
+  }
+
+  return (
+    <Dashboard
+      locos={locos}
+      routes={routes}
+      onRouteCreated={(route) => {
+        setRoutes((prev) => [...prev, route]);
+      }}
+    />
   );
 }
 
 export default function App() {
   return (
     <ThemeProvider>
-      <Dashboard />
+      <AppContent />
     </ThemeProvider>
   );
 }
