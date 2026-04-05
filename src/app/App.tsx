@@ -15,6 +15,7 @@ import { MotorDetailCard } from './components/MotorDetailCard';
 import { EventCard } from './components/EventCard';
 import { RouteDropdown } from './components/RouteDropdown';
 import { CreateRouteModal } from './components/CreateRouteModal';
+import { PlaybackBar } from './components/PlaybackBar';
 
 import {
   getLocomotives,
@@ -354,11 +355,15 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
   }, [routeId]);
 
   // -------------------------------------------------------------------------
-  // Derived display values (real data or fallback to ViewModel defaults)
+  // Derived display values — playback frame overrides live when scrubbing
   // -------------------------------------------------------------------------
-  const liveSpeed = telemetry?.speed ?? selectedLoco.speed;
-  const liveHealth = telemetry?.health_index ?? selectedLoco.healthIndex;
-  const liveState = telemetry?.state ?? null;
+  const [playbackFrame, setPlaybackFrame] = useState<TelemetryHistoryItem | null>(null);
+
+  // Active frame: playback takes priority over live telemetry
+  const activeFrame = playbackFrame ?? telemetry;
+  const liveSpeed = activeFrame?.speed ?? selectedLoco?.speed ?? 0;
+  const liveHealth = activeFrame?.health_index ?? selectedLoco?.healthIndex ?? 80;
+  const liveState = activeFrame?.state ?? null;
   const liveStatus = toStatus(liveState);
 
   // -------------------------------------------------------------------------
@@ -737,41 +742,13 @@ function Dashboard({ locos, routes: initialRoutes, onRouteCreated }: DashboardPr
             </div>
           </div>
 
-          {/* Playback stub */}
-          <div
-            className="border rounded-lg p-3 sm:p-4 mt-3"
-            style={{
-              backgroundColor: 'var(--dash-bg-card)',
-              borderColor: 'var(--dash-border)',
-              borderWidth: '0.5px',
-            }}
-          >
-            <div className="relative mb-3 sm:mb-4">
-              <div
-                className="relative h-1.5 rounded-full cursor-pointer"
-                style={{ backgroundColor: 'rgba(156, 163, 175, 0.3)' }}
-              >
-                <div
-                  className="absolute left-0 top-0 bottom-0 rounded-full"
-                  style={{ backgroundColor: 'var(--dash-accent)', width: '32%' }}
-                />
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <div
-                className="text-xs sm:text-sm font-medium"
-                style={{ color: 'var(--dash-text-secondary)', fontFamily: 'monospace' }}
-              >
-                LIVE
-              </div>
-              <div
-                className="text-xs sm:text-sm font-medium"
-                style={{ color: 'var(--dash-text-secondary)', fontFamily: 'monospace' }}
-              >
-                {currentTime}
-              </div>
-            </div>
-          </div>
+          {/* Playback timeline */}
+          {locoId && (
+            <PlaybackBar
+              locomotiveId={locoId}
+              onFrameChange={(frame) => setPlaybackFrame(frame)}
+            />
+          )}
         </>
       )}
 
